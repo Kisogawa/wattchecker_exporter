@@ -32,8 +32,6 @@ const VOLTAGE_STEP float32 = 1           /* mV */
 const POWER_STEP float32 = 5             /* mW */
 const CURRENT_STEP float32 = (1.0 / 128) /* mA */
 
-const REQUEST_INTERVAL = 2 /* 秒 */
-
 // 収集データ記録用構造体
 type CollectionData struct {
 	lastCollectDate time.Time // 最終取得時間
@@ -88,10 +86,11 @@ func main() {
 	}
 
 	// 電力の取得
-	wattDurations := prometheus.NewCounterFunc(
-		prometheus.CounterOpts{
-			Name: "REX_BTWATTCH1_Watt",
-			Help: "REX-BTWATTCH1",
+	wattDurations := prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name:        "REXBTWATTCH_Watt",
+			Help:        "REX-BTWATTCH",
+			ConstLabels: prometheus.Labels{"Name": "PC"},
 		},
 		func() float64 {
 			c := Collect(port, crc8Table)
@@ -100,10 +99,11 @@ func main() {
 	)
 
 	// 電圧の取得
-	voltageDurations := prometheus.NewCounterFunc(
-		prometheus.CounterOpts{
-			Name: "REX_BTWATTCH1_Voltage",
-			Help: "REX-BTWATTCH1",
+	voltageDurations := prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name:        "REXBTWATTCH_Voltage",
+			Help:        "REX-BTWATTCH",
+			ConstLabels: prometheus.Labels{"Name": "PC"},
 		},
 		func() float64 {
 			c := Collect(port, crc8Table)
@@ -112,10 +112,11 @@ func main() {
 	)
 
 	// 電流の取得
-	currentDurations := prometheus.NewCounterFunc(
-		prometheus.CounterOpts{
-			Name: "REX_BTWATTCH1_Current",
-			Help: "REX-BTWATTCH1",
+	currentDurations := prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name:        "REX_BTWATTCH_Ampere",
+			Help:        "REX-BTWATTCH",
+			ConstLabels: prometheus.Labels{"Name": "PC"},
 		},
 		func() float64 {
 			c := Collect(port, crc8Table)
@@ -361,14 +362,19 @@ func dataParse(buf []uint8) CollectionData {
 	// データの登録
 	collectionData.lastCollectDate = time.Now()
 	collectionData.time = time.Date(
-		(2000 + int(buf[19])),
-		time.Month(buf[18]),
-		int(buf[17]),
-		int(buf[16]),
-		int(buf[15]),
-		int(buf[14]),
+		(2000 + int(buf[19])), // 年
+		time.Month(buf[18]),   // 月
+		int(buf[17]),          // 日
+		int(buf[16]),          // 時
+		int(buf[15]),          // 分
+		int(buf[14]),          // 秒
 		0,
 		time.Now().Location())
+
+	// 受信データのダンプ表示(デバ用)
+	// for i := 0; i < len(buf); i++ {
+	// 	fmt.Printf("%03d ", buf[i])
+	// }
 
 	collectionData.current = TO_MA(current)
 	collectionData.voltage = TO_V(voltage)
