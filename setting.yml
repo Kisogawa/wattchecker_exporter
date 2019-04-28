@@ -1,0 +1,7 @@
+Devices:
+  -
+    DevicePath: "/dev/rfcomm0"
+    DeviceName: "PC"
+  -
+    DevicePath: "/dev/rfcomm1"
+    DeviceName: "AirConditioner"

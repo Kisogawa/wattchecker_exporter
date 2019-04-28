@@ -26,6 +26,10 @@
         ```
         [bluetooth]# agent on
         ```
+    1. ペアリング時にPINの入力が表示されるようになる
+        ```
+        [bluetooth]# agent DisplayYesNo
+        ```
     1. スキャン  
         WATT CHECKERと表示されるもののアドレス(MACアドレス？)をコピー
         ```
@@ -64,7 +68,7 @@
         $ sudo systemctl daemon-reload
         $ sudo systemctl restart bluetooth
         ```
-1. rc.localの書き換え
+1. rc.localの書き換え(複数の接続先がある場合は，sudo rfcomm bind の行を増やす)
     ```
     $ sudo vi /etc/rc.local
     ```
@@ -188,18 +192,33 @@
     ```
     $ cd wattchecker_exporter/
     ```
-1. デバイスのパスが違う場合はここでソースコードを修正  
-    (デバイスのパスは63行目あたりの変数DevicePath)
-
+1. 設定ファイルを修正する(`setting.yml`)  
+    例
+    ```
+    Devices:
+      -
+        DevicePath: "/dev/rfcomm0"
+        DeviceName: "PC"
+      -
+        DevicePath: "/dev/rfcomm1"
+        DeviceName: "AirConditioner"
+    ```
+1. 必要パッケージの取得
+    ```
+    $ go get
+    ```
 1. ビルドを行う
     ```
-    $ go build wattchecker_exporter.go 
+    $ go build wattchecker_exporter.go
     ```
 1. 試しに実行
     ```
     $ ./wattchecker_exporter
     シリアルポート接続[/dev/rfcomm0]...完了
-    ワットチェッカーの初期化開始...完了
+    シリアルポート接続[/dev/rfcomm1]...完了
+    ワットチェッカーの初期化開始[/dev/rfcomm0]...完了
+    ワットチェッカーの初期化開始[/dev/rfcomm1]...完了
+    計測開始中...完了
     計測開始中...完了
     サーバーを公開します
     ```
@@ -211,9 +230,10 @@
 
 ## 自動実行の設定
 
-1. ビルドした実行ファイルをbinにコピー
+1. ビルドした実行ファイル等をbinにコピー
     ```
-    $ sudo cp go/repository/wattchecker_exporter/wattchecker_exporter /usr/local/bin/
+    $ sudo cp wattchecker_exporter /usr/local/bin/
+    $ sudo cp setting.yml /usr/local/bin/
     ```
 
 1. サービス起動用ファイル作成

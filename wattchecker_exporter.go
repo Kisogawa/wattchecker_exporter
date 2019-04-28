@@ -1,10 +1,14 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -12,6 +16,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sigurn/crc8"
+
+	yaml "gopkg.in/yaml.v2"
 )
 
 // 定数の定義
@@ -41,6 +47,20 @@ type CollectionData struct {
 	power           float32   // 電力(W)
 }
 
+// 設定ファイル記録用構造体
+type Setting struct {
+	Devices []Device `yaml:"Devices"`
+}
+type Device struct {
+	DevicePath         string `yaml:"DevicePath"`
+	DeviceName         string `yaml:"DeviceName"`
+	Port               serial.Port
+	wattDurations      prometheus.GaugeFunc
+	voltageDurations   prometheus.GaugeFunc
+	ampereDurations    prometheus.GaugeFunc
+	collectionDataLast CollectionData // 直前の取得データ
+}
+
 var (
 	addr              = flag.String("listen-address", ":4351", "The address to listen on for HTTP requests.")
 	oscillationPeriod = flag.Duration("oscillation-period", 10*time.Minute, "The duration of the rate oscillation period.")
@@ -55,80 +75,69 @@ var (
 func init() {}
 
 func main() {
+
+	// 実行ファイルのパスを取得する
+	ownPath, ExecutableErr := os.Executable()
+	if ExecutableErr != nil {
+		fmt.Println("自身のパス取得に失敗[" + ExecutableErr.Error() + "]")
+	}
+
+	// ディレクトリ取得
+	ownDir := filepath.Dir(ownPath)
+
+	// 設定ファイルを読み込む
+	buf, err := ioutil.ReadFile(ownDir + "/setting.yml")
+	if err != nil {
+		fmt.Println("設定ファイル読み込みエラー[" + err.Error() + "]")
+		return
+	}
+
+	// 構造体に変換する
+	var setting Setting
+	err = yaml.Unmarshal(buf, &setting)
+	if err != nil {
+		fmt.Println("設定ファイル解釈エラー[" + err.Error() + "]")
+		return
+	}
+
 	flag.Parse()
 
-	// 接続先デバイスのパス
-	DevicePath := "/dev/rfcomm0"
-	fmt.Print("シリアルポート接続[" + DevicePath + "]...")
-
-	// シリアルポートを読み込む
-	port, err := serial.Open(&serial.Config{Address: DevicePath})
-	if err != nil {
-		log.Fatal(err)
-		fmt.Println("失敗")
-		fmt.Println(err)
+	// Deviceの個数分だけ接続する
+	for i := 0; i < len(setting.Devices); i++ {
+		err := setting.Devices[i].initDevice()
+		if err != nil {
+			return
+		}
+		defer setting.Devices[i].finalizeDevice()
 	}
-	defer fmt.Println("ポートを閉じました")
-	defer port.Close()
-
-	fmt.Println("完了")
 
 	// CRC8テーブル作成
 	crc8Table := crc8.MakeTable(CRC8_POLYNOMIAL)
 
 	// ワットチェッカーの初期化を行う
-	init_wattchecker(port, crc8Table)
-
-	// ワットチェッカーの計測コマンド(計測開始コマンド)
-	if ret := start_measure(port, crc8Table); ret != 0 {
-		fmt.Println("計測開始コマンドエラー")
-		return
+	for i := 0; i < len(setting.Devices); i++ {
+		setting.Devices[i].initWattChecker(crc8Table)
 	}
 
-	// 電力の取得
-	wattDurations := prometheus.NewGaugeFunc(
-		prometheus.GaugeOpts{
-			Name:        "REXBTWATTCH_Watt",
-			Help:        "REX-BTWATTCH",
-			ConstLabels: prometheus.Labels{"Name": "PC"},
-		},
-		func() float64 {
-			c := Collect(port, crc8Table)
-			return float64(c.power)
-		},
-	)
+	// ワットチェッカーの計測コマンド(計測開始コマンド)
+	for i := 0; i < len(setting.Devices); i++ {
+		err := setting.Devices[i].startMeasure(crc8Table)
+		if err != nil {
+			return
+		}
+	}
 
-	// 電圧の取得
-	voltageDurations := prometheus.NewGaugeFunc(
-		prometheus.GaugeOpts{
-			Name:        "REXBTWATTCH_Voltage",
-			Help:        "REX-BTWATTCH",
-			ConstLabels: prometheus.Labels{"Name": "PC"},
-		},
-		func() float64 {
-			c := Collect(port, crc8Table)
-			return float64(c.voltage)
-		},
-	)
-
-	// 電流の取得
-	currentDurations := prometheus.NewGaugeFunc(
-		prometheus.GaugeOpts{
-			Name:        "REX_BTWATTCH_Ampere",
-			Help:        "REX-BTWATTCH",
-			ConstLabels: prometheus.Labels{"Name": "PC"},
-		},
-		func() float64 {
-			c := Collect(port, crc8Table)
-			fmt.Println(c)
-			return float64(c.current)
-		},
-	)
+	// コレクターの生成
+	for i := 0; i < len(setting.Devices); i++ {
+		setting.Devices[i].makeCollector(crc8Table)
+	}
 
 	// Prometiusに登録する
-	prometheus.MustRegister(wattDurations)
-	prometheus.MustRegister(voltageDurations)
-	prometheus.MustRegister(currentDurations)
+	for i := 0; i < len(setting.Devices); i++ {
+		prometheus.MustRegister(setting.Devices[i].wattDurations)
+		prometheus.MustRegister(setting.Devices[i].voltageDurations)
+		prometheus.MustRegister(setting.Devices[i].ampereDurations)
+	}
 
 	fmt.Println("サーバーを公開します")
 	// Expose the registered metrics via HTTP.
@@ -138,35 +147,116 @@ func main() {
 	fmt.Println("サーバー停止")
 }
 
-var (
-	// 直前の取得データ
-	collectionDataLast = CollectionData{}
-)
+// デバイスの初期化
+func (d *Device) initDevice() (err error) {
+	devicePath := d.DevicePath
+	fmt.Print("シリアルポート接続[" + devicePath + "]...")
+	// シリアルポートを読み込む
+	p, e := serial.Open(&serial.Config{Address: devicePath})
+	if err != nil {
+		log.Fatal(err)
+		fmt.Println("失敗")
+		fmt.Println(err)
+		err = e
+		return
+	}
+	fmt.Println("ポート接続完了")
+	d.Port = p
+	return
+}
+
+// ワットチェッカーの初期化を行う
+func (d *Device) initWattChecker(crc8Table *crc8.Table) {
+	fmt.Print("ワットチェッカーの初期化開始[" + d.DevicePath + "]...")
+	init_wattchecker(d.Port, crc8Table)
+	fmt.Println("完了")
+}
+
+// ワットチェッカーに計測開始コマンドを出力する
+func (d *Device) startMeasure(crc8Table *crc8.Table) (err error) {
+	if ret := start_measure(d.Port, crc8Table); ret != 0 {
+		fmt.Println("計測開始コマンドエラー")
+		err = errors.New("計測開始コマンドエラー")
+		return
+	}
+	return
+}
+
+// コレクター作成
+func (d *Device) makeCollector(crc8Table *crc8.Table) {
+	// 電力の取得
+	d.wattDurations = prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name:        "REXBTWATTCH_Watt",
+			Help:        "REX-BTWATTCH",
+			ConstLabels: prometheus.Labels{"Name": d.DeviceName},
+		},
+		func() float64 {
+			c := Collect(d, crc8Table)
+			return float64(c.power)
+		},
+	)
+
+	// 電圧の取得
+	d.voltageDurations = prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name:        "REXBTWATTCH_Voltage",
+			Help:        "REX-BTWATTCH",
+			ConstLabels: prometheus.Labels{"Name": d.DeviceName},
+		},
+		func() float64 {
+			c := Collect(d, crc8Table)
+			return float64(c.voltage)
+		},
+	)
+
+	// 電流の取得
+	d.ampereDurations = prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name:        "REXBTWATTCH_Ampere",
+			Help:        "REX-BTWATTCH",
+			ConstLabels: prometheus.Labels{"Name": d.DeviceName},
+		},
+		func() float64 {
+			c := Collect(d, crc8Table)
+			fmt.Println(c)
+			return float64(c.current)
+		},
+	)
+}
+
+// デバイスの終了処理
+func (d *Device) finalizeDevice() {
+	fmt.Println("ポートを閉じました[" + d.DevicePath + "]")
+	d.Port.Close()
+}
+
+var ()
 
 // データの取得処理
-func Collect(port serial.Port, crc8Table *crc8.Table) CollectionData {
+func Collect(d *Device, crc8Table *crc8.Table) CollectionData {
 
-	if !collectionDataLast.lastCollectDate.IsZero() {
+	if !d.collectionDataLast.lastCollectDate.IsZero() {
 		// 最終取得時間が現在からどれだけ前か確認する
-		d := time.Since(collectionDataLast.lastCollectDate)
+		duration := time.Since(d.collectionDataLast.lastCollectDate)
 		// 500ミリ秒以上していない場合
-		if d.Nanoseconds() < int64(500)*int64(time.Millisecond) {
+		if duration.Nanoseconds() < int64(500)*int64(time.Millisecond) {
 			// 直前のデータを返す
-			return collectionDataLast
+			return d.collectionDataLast
 		}
 	}
 
 	buf := make([]uint8, BUF_SIZE)
 
-	if ret := request_measure(port, buf, crc8Table); ret != 0 {
+	if ret := request_measure(d.Port, buf, crc8Table); ret != 0 {
 		fmt.Println("計測エラー")
 		return CollectionData{}
 	}
 
 	// 最終取得データとして登録する
-	collectionDataLast = dataParse(buf)
+	d.collectionDataLast = dataParse(buf)
 
-	return collectionDataLast
+	return d.collectionDataLast
 }
 
 /**
@@ -299,7 +389,6 @@ func xread(port serial.Port, buf []uint8, count int) int {
 }
 
 func init_wattchecker(port serial.Port, crc8Table *crc8.Table) {
-	fmt.Print("ワットチェッカーの初期化開始...")
 	/* ペイロード:RTC タイマー設定コマンド */
 	pld := make([]uint8, RTC_TMR_SND_LENGTH)
 	buf := make([]uint8, BUF_SIZE)
@@ -310,7 +399,6 @@ func init_wattchecker(port serial.Port, crc8Table *crc8.Table) {
 	communicate_command(port,
 		cmd, RTC_TMR_SND_LENGTH,
 		buf, RTC_TMR_RCV_LENGTH)
-	fmt.Println("完了")
 }
 
 /**
