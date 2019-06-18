@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"flag"
-	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -79,7 +78,7 @@ func main() {
 	// 実行ファイルのパスを取得する
 	ownPath, ExecutableErr := os.Executable()
 	if ExecutableErr != nil {
-		fmt.Println("自身のパス取得に失敗[" + ExecutableErr.Error() + "]")
+		log.Printf("自身のパス取得に失敗[" + ExecutableErr.Error() + "]")
 	}
 
 	// ディレクトリ取得
@@ -88,7 +87,7 @@ func main() {
 	// 設定ファイルを読み込む
 	buf, err := ioutil.ReadFile(ownDir + "/setting.yml")
 	if err != nil {
-		fmt.Println("設定ファイル読み込みエラー[" + err.Error() + "]")
+		log.Printf("設定ファイル読み込みエラー[" + err.Error() + "]")
 		return
 	}
 
@@ -96,7 +95,7 @@ func main() {
 	var setting Setting
 	err = yaml.Unmarshal(buf, &setting)
 	if err != nil {
-		fmt.Println("設定ファイル解釈エラー[" + err.Error() + "]")
+		log.Printf("設定ファイル解釈エラー[" + err.Error() + "]")
 		return
 	}
 
@@ -139,43 +138,43 @@ func main() {
 		prometheus.MustRegister(setting.Devices[i].ampereDurations)
 	}
 
-	fmt.Println("サーバーを公開します")
+	log.Printf("サーバーを公開します")
 	// Expose the registered metrics via HTTP.
 	// 登録されたmetricをHTTPサーバーで公開する
 	http.Handle("/metrics", promhttp.Handler())
 	log.Fatal(http.ListenAndServe(*addr, nil))
-	fmt.Println("サーバー停止")
+	log.Printf("サーバー停止")
 }
 
 // デバイスの初期化
 func (d *Device) initDevice() (err error) {
 	devicePath := d.DevicePath
-	fmt.Print("シリアルポート接続[" + devicePath + "]...")
-	// シリアルポートを読み込む
-	p, e := serial.Open(&serial.Config{Address: devicePath})
+	log.Printf("シリアルポート接続[" + devicePath + "]...")
+	// シリアルポートを読み込む(10秒でタイムアウト)
+	p, e := serial.Open(&serial.Config{Address: devicePath, Timeout: 10 * time.Second})
 	if err != nil {
 		log.Fatal(err)
-		fmt.Println("失敗")
-		fmt.Println(err)
+		log.Printf("失敗")
+		log.Print(err)
 		err = e
 		return
 	}
-	fmt.Println("ポート接続完了")
+	log.Printf("ポート接続完了")
 	d.Port = p
 	return
 }
 
 // ワットチェッカーの初期化を行う
 func (d *Device) initWattChecker(crc8Table *crc8.Table) {
-	fmt.Print("ワットチェッカーの初期化開始[" + d.DevicePath + "]...")
+	log.Printf("ワットチェッカーの初期化開始[" + d.DevicePath + "]...")
 	init_wattchecker(d.Port, crc8Table)
-	fmt.Println("完了")
+	log.Printf("完了")
 }
 
 // ワットチェッカーに計測開始コマンドを出力する
 func (d *Device) startMeasure(crc8Table *crc8.Table) (err error) {
 	if ret := start_measure(d.Port, crc8Table); ret != 0 {
-		fmt.Println("計測開始コマンドエラー")
+		log.Printf("計測開始コマンドエラー")
 		err = errors.New("計測開始コマンドエラー")
 		return
 	}
@@ -219,7 +218,7 @@ func (d *Device) makeCollector(crc8Table *crc8.Table) {
 		},
 		func() float64 {
 			c := Collect(d, crc8Table)
-			fmt.Println(c)
+			log.Print(c)
 			return float64(c.current)
 		},
 	)
@@ -227,7 +226,7 @@ func (d *Device) makeCollector(crc8Table *crc8.Table) {
 
 // デバイスの終了処理
 func (d *Device) finalizeDevice() {
-	fmt.Println("ポートを閉じました[" + d.DevicePath + "]")
+	log.Printf("ポートを閉じました[" + d.DevicePath + "]")
 	d.Port.Close()
 }
 
@@ -249,7 +248,7 @@ func Collect(d *Device, crc8Table *crc8.Table) CollectionData {
 	buf := make([]uint8, BUF_SIZE)
 
 	if ret := request_measure(d.Port, buf, crc8Table); ret != 0 {
-		fmt.Println("計測エラー")
+		log.Printf("計測エラー")
 		return CollectionData{}
 	}
 
@@ -312,18 +311,18 @@ func create_command(cmd []uint8, pld []uint8, pld_size int, crc8Table *crc8.Tabl
 func communicate_command(port serial.Port, wbuf []uint8, wcount int, rbuf []uint8, rcount int) int {
 
 	if ret := xwrite(port, wbuf, wcount); ret < 0 {
-		fmt.Println("xwrite error")
+		log.Printf("xwrite error")
 		return -1
 	}
 
 	if ret := xread(port, rbuf, rcount); ret < 0 {
-		fmt.Println("xread error")
+		log.Printf("xread error")
 		return -1
 	}
 
 	if rbuf[4] != 0x00 {
 		// fprintf(stderr, "received code error\n")
-		fmt.Println("eceived code error[" + strconv.Itoa(int(rbuf[4])) + "]")
+		log.Printf("eceived code error[" + strconv.Itoa(int(rbuf[4])) + "]")
 		return -1
 	}
 
@@ -342,7 +341,7 @@ func xwrite(port serial.Port, buf []uint8, count int) int {
 		ret = n
 		if err != nil || ret < 0 {
 			// perror("write");
-			fmt.Println("書き込みエラー[" + err.Error() + "]")
+			log.Printf("書き込みエラー[" + err.Error() + "]")
 			return 0
 		}
 	}
@@ -359,28 +358,28 @@ func xread(port serial.Port, buf []uint8, count int) int {
 	for length := 0; length < count; length += ret {
 		// 配列の長さ確認
 		if length < 0 {
-			fmt.Println("読み込みエラー([)lenが0以下です)[length=" + strconv.Itoa(length) + "]")
+			log.Printf("読み込みエラー([)lenが0以下です)[length=" + strconv.Itoa(length) + "]")
 			return 0
 		}
 		if length >= len(buf) {
-			fmt.Println("読み込みエラー([)lengthがbufより多いです)[length=" + strconv.Itoa(length) + "],[buf=" + strconv.Itoa(len(buf)) + "]")
+			log.Printf("読み込みエラー([)lengthがbufより多いです)[length=" + strconv.Itoa(length) + "],[buf=" + strconv.Itoa(len(buf)) + "]")
 			return 0
 		}
 		if count-length < 0 {
-			fmt.Println("読み込みエラー([)count-lengthが0以下です)[count-length=" + strconv.Itoa(length) + "]")
+			log.Printf("読み込みエラー([)count-lengthが0以下です)[count-length=" + strconv.Itoa(length) + "]")
 			return 0
 		}
 		if count-length >= len(buf) {
-			fmt.Println("読み込みエラー([)count-lengthがbufより多いです)[count-length=" + strconv.Itoa(length) + "],[buf=" + strconv.Itoa(len(buf)) + "]")
+			log.Printf("読み込みエラー([)count-lengthがbufより多いです)[count-length=" + strconv.Itoa(length) + "],[buf=" + strconv.Itoa(len(buf)) + "]")
 			return 0
 		}
 		n, err := port.Read(buf[length:count])
 		ret = n
-		// fmt.Println(strconv.Itoa(int(count)) + "読み込み予定")
-		// fmt.Println(strconv.Itoa(int(ret)) + "バイト読み込み")
+		// log.Printf(strconv.Itoa(int(count)) + "読み込み予定")
+		// log.Printf(strconv.Itoa(int(ret)) + "バイト読み込み")
 		if err != nil || ret < 0 {
 			// perror("read")
-			fmt.Println("読み込みエラー[" + err.Error() + "]")
+			log.Printf("読み込みエラー[" + err.Error() + "]")
 			return 0
 		}
 	}
@@ -406,7 +405,7 @@ func init_wattchecker(port serial.Port, crc8Table *crc8.Table) {
  * @param fd ファイルディスクリプタ
  */
 func start_measure(port serial.Port, crc8Table *crc8.Table) int {
-	fmt.Print("計測開始中...")
+	log.Printf("計測開始中...")
 	/* ペイロード:計測開始コマンド(0xFF:テスト用高速測定モード
 	 *			  0x00:テスト用高速測定モード解除)
 	 */
@@ -418,7 +417,7 @@ func start_measure(port serial.Port, crc8Table *crc8.Table) int {
 	ret := communicate_command(port,
 		cmd, SRT_MSR_SND_LENGTH,
 		buf, SRT_MSR_RCV_LENGTH)
-	fmt.Println("完了")
+	log.Printf("完了")
 	return ret
 }
 
@@ -461,7 +460,7 @@ func dataParse(buf []uint8) CollectionData {
 
 	// 受信データのダンプ表示(デバ用)
 	// for i := 0; i < len(buf); i++ {
-	// 	fmt.Printf("%03d ", buf[i])
+	// 	log.Printff("%03d ", buf[i])
 	// }
 
 	collectionData.current = TO_MA(current)
@@ -477,9 +476,9 @@ func dataParse(buf []uint8) CollectionData {
  */
 func disp_data_details(collectionData CollectionData) {
 
-	fmt.Println(collectionData.time)
+	log.Printf(collectionData.time)
 
-	fmt.Printf("voltage = %3.2fV , current = %4.2fmA , power = %4.2fW\n",
+	log.Printf("voltage = %3.2fV , current = %4.2fmA , power = %4.2fW\n",
 		collectionData.voltage, collectionData.current, collectionData.power)
 }
 
