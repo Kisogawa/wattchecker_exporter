@@ -476,7 +476,7 @@ func dataParse(buf []uint8) CollectionData {
  */
 func disp_data_details(collectionData CollectionData) {
 
-	log.Printf(collectionData.time)
+	log.Print(collectionData.time)
 
 	log.Printf("voltage = %3.2fV , current = %4.2fmA , power = %4.2fW\n",
 		collectionData.voltage, collectionData.current, collectionData.power)
